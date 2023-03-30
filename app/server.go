@@ -167,6 +167,20 @@ func handleConnection(conn net.Conn) {
 }
 
 func readCommand(reader *bufio.Reader) (string, []interface{}, error) {
+	prefix, err := reader.Peek(1)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if prefix[0] != '*' {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return "", nil, err
+		}
+
+		return strings.ToUpper(strings.TrimSpace(line)), nil, nil
+	}
+
 	resp, err := readRESP(reader)
 	if err != nil {
 		return "", nil, err
