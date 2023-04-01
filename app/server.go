@@ -142,6 +142,8 @@ func getFunctionByName(name string) func(cmd string, args []interface{}) []byte 
 	switch name {
 	case "pingCommand":
 		return handlePingCommand
+	case "echoCommand":
+		return handleEchoCommand
 	default:
 		return nil
 	}
@@ -296,6 +298,19 @@ func handlePingCommand(cmd string, args []interface{}) []byte {
 	} else {
 		return addReplyBulk(args)
 	}
+}
+
+func handleEchoCommand(cmd string, args []interface{}) []byte {
+	if len(args) != 1 {
+		return addReplyErrorArity()
+	}
+
+	arg, ok := args[0].(string)
+	if !ok {
+		return []byte("-ERR Invalid argument type\r\n")
+	}
+
+	return addReplyBulk([]interface{}{arg})
 }
 
 func addReplyErrorArity() []byte {
