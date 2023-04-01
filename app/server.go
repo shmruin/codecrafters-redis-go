@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,12 @@ const (
 	CMD_SENTINEL
 )
 
+type Argument struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Optional bool   `json:"optional"`
+}
+
 type CommandInfo struct {
 	Summary       string     `json:"summary"`
 	Complexity    string     `json:"complexity"`
@@ -31,15 +38,15 @@ type CommandInfo struct {
 	Arguments     []Argument `json:"arguments"`
 }
 
-type Argument struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Optional bool   `json:"optional"`
+type CommandRequest struct {
+	Cmd      string
+	Args     []interface{}
+	Response chan<- []byte
 }
 
 type RedisCommand struct {
 	Name     string
-	Function func(net.Conn, string, []interface{})
+	Function func(string, []interface{}) []byte
 	Group    string
 	MinArgs  int
 	CmdFlags int
@@ -131,10 +138,10 @@ func loadCommandsFromJSON(dir string) map[string]RedisCommand {
 	return commandTable
 }
 
-func getFunctionByName(name string) func(conn net.Conn, cmd string, args []interface{}) {
+func getFunctionByName(name string) func(cmd string, args []interface{}) []byte {
 	switch name {
 	case "pingCommand":
-		return pingCommand
+		return handlePingCommand
 	default:
 		return nil
 	}
@@ -142,6 +149,9 @@ func getFunctionByName(name string) func(conn net.Conn, cmd string, args []inter
 
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
+
+	commandChan := make(chan CommandRequest)
+	go handleCommands(conn, commandChan)
 
 	reader := bufio.NewReader(conn)
 	for {
@@ -155,14 +165,28 @@ func handleConnection(conn net.Conn) {
 			continue
 		}
 
-		switch cmd {
-		case "PING":
-			pingCommand(conn, cmd, args)
-		default:
-			fmt.Fprintf(conn, "Unknown command: %s\n", cmd)
-		}
+		responseChan := make(chan []byte)
+		commandChan <- CommandRequest{Cmd: cmd, Args: args, Response: responseChan}
+		response := <-responseChan
+		conn.Write(response)
 
 		fmt.Printf("Command: %s, Arguments: %v\n", cmd, args)
+	}
+}
+
+func handleCommands(conn net.Conn, commandChan <-chan CommandRequest) {
+	for commandRequest := range commandChan {
+		cmd := commandRequest.Cmd
+		args := commandRequest.Args
+
+		var response []byte
+		if redisCmd, ok := redisCommandTable[cmd]; ok {
+			response = redisCmd.Function(cmd, args)
+		} else {
+			response = []byte(fmt.Sprintf("-ERR Unknown command: %s\r\n", cmd))
+		}
+
+		commandRequest.Response <- response
 	}
 }
 
@@ -262,48 +286,49 @@ func readRESP(reader *bufio.Reader) (interface{}, error) {
 	}
 }
 
-func pingCommand(conn net.Conn, cmd string, args []interface{}) {
+func handlePingCommand(cmd string, args []interface{}) []byte {
 	if len(args) > 1 {
-		addReplyErrorArity(conn)
-		return
+		return addReplyErrorArity()
 	}
 
 	if len(args) == 0 {
-		addReply(conn, redisCommandTable[cmd])
+		return addReply(redisCommandTable[cmd])
 	} else {
-		addReplyBulk(conn, args)
+		return addReplyBulk(args)
 	}
 }
 
-func addReplyErrorArity(conn net.Conn) {
-	conn.Write([]byte("-ERR wrong number of arguments\r\n"))
+func addReplyErrorArity() []byte {
+	return []byte("-ERR wrong number of arguments\r\n")
 }
 
-func addReply(conn net.Conn, command RedisCommand) {
+func addReply(command RedisCommand) []byte {
 	switch command.Name {
 	case "PING":
-		conn.Write([]byte("+PONG\r\n"))
+		return []byte("+PONG\r\n")
 	default:
 		errMsg := fmt.Sprintf("-ERR Unknown command %s\r\n", command.Name)
-		conn.Write([]byte(errMsg))
+		return []byte(errMsg)
 	}
 }
 
-func addReplyBulk(conn net.Conn, args []interface{}) {
+func addReplyBulk(args []interface{}) []byte {
 	if len(args) == 0 {
-		conn.Write([]byte("+\r\n"))
+		return []byte("+\r\n")
 	} else {
+		reply := bytes.Buffer{}
 		for _, arg := range args {
 			switch value := arg.(type) {
 			case string:
-				conn.Write([]byte(fmt.Sprintf("$%d\r\n", len(value))))
-				conn.Write([]byte(fmt.Sprintf("%s\r\n", value)))
+				reply.WriteString(fmt.Sprintf("$%d\r\n", len(value)))
+				reply.WriteString(fmt.Sprintf("%s\r\n", value))
 			case []interface{}:
-				addReplyBulk(conn, value)
+				return addReplyBulk(value)
 			default:
 				errMsg := fmt.Sprintf("-ERR Unknown argument type %T\r\n", value)
-				conn.Write([]byte(errMsg))
+				return []byte(errMsg)
 			}
 		}
+		return reply.Bytes()
 	}
 }
