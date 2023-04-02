@@ -1,0 +1,30 @@
+{
+    "SET": {
+        "summary": "Set the string value of a key",
+        "complexity": "O(1)",
+        "group": "string",
+        "since": "1.0.0",
+        "arity": 2,
+        "function": "handleSetCommand",
+        "command_flags": [
+            "FAST"
+        ],
+        "acl_categories": [
+            "WRITE",
+            "STRING"
+        ],
+        "command_tips": [],
+        "arguments": [
+            {
+                "name": "key",
+                "type": "key",
+                "optional": false
+            },
+            {
+                "name": "value",
+                "type": "string",
+                "optional": false
+            }
+        ]
+    }
+}

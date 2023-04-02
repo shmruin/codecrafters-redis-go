@@ -1,0 +1,25 @@
+{
+    "GET": {
+        "summary": "Get the value of a key",
+        "complexity": "O(1)",
+        "group": "string",
+        "since": "1.0.0",
+        "arity": 1,
+        "function": "handleGetCommand",
+        "command_flags": [
+            "FAST"
+        ],
+        "acl_categories": [
+            "READ",
+            "STRING"
+        ],
+        "command_tips": [],
+        "arguments": [
+            {
+                "name": "key",
+                "type": "key",
+                "optional": false
+            }
+        ]
+    }
+}

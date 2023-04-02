@@ -46,11 +46,15 @@ type CommandRequest struct {
 
 type RedisCommand struct {
 	Name     string
-	Function func(string, []interface{}) []byte
+	Function func(server *RedisServer, cmd string, args []interface{}) []byte
 	Group    string
 	MinArgs  int
 	CmdFlags int
 	Category string
+}
+
+type RedisServer struct {
+	Storage map[string]string
 }
 
 var redisCommandTable map[string]RedisCommand
@@ -58,13 +62,8 @@ var redisCommandTable map[string]RedisCommand
 func main() {
 	// load all redis commands with json files into RedisCommandTable map
 	redisCommandTable = loadCommandsFromJSON("app/commands")
-
-	// log if converting correct
-	if pingCmd, ok := redisCommandTable["PING"]; ok {
-		fmt.Printf("Name: %s\nFunction: %T\nGroup: %s\nMinArgs: %d\nCmdFlags: %d\nCategory: %s\n",
-			pingCmd.Name, pingCmd.Function, pingCmd.Group, pingCmd.MinArgs, pingCmd.CmdFlags, pingCmd.Category)
-	} else {
-		fmt.Println("The 'PING' command was not found in the command table.")
+	redisServer := &RedisServer{
+		Storage: make(map[string]string),
 	}
 
 	l, err := net.Listen("tcp", "0.0.0.0:6379")
@@ -82,7 +81,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		go handleConnection(conn)
+		go handleConnection(redisServer, conn)
 	}
 }
 
@@ -138,22 +137,26 @@ func loadCommandsFromJSON(dir string) map[string]RedisCommand {
 	return commandTable
 }
 
-func getFunctionByName(name string) func(cmd string, args []interface{}) []byte {
+func getFunctionByName(name string) func(server *RedisServer, cmd string, args []interface{}) []byte {
 	switch name {
 	case "pingCommand":
 		return handlePingCommand
 	case "echoCommand":
 		return handleEchoCommand
+	case "handleSetCommand":
+		return (*RedisServer).handleSetCommand
+	case "handleGetCommand":
+		return (*RedisServer).handleGetCommand
 	default:
 		return nil
 	}
 }
 
-func handleConnection(conn net.Conn) {
+func handleConnection(server *RedisServer, conn net.Conn) {
 	defer conn.Close()
 
 	commandChan := make(chan CommandRequest)
-	go handleCommands(conn, commandChan)
+	go handleCommands(server, conn, commandChan)
 
 	reader := bufio.NewReader(conn)
 	for {
@@ -176,19 +179,18 @@ func handleConnection(conn net.Conn) {
 	}
 }
 
-func handleCommands(conn net.Conn, commandChan <-chan CommandRequest) {
+func handleCommands(server *RedisServer, conn net.Conn, commandChan <-chan CommandRequest) {
 	for commandRequest := range commandChan {
 		cmd := commandRequest.Cmd
 		args := commandRequest.Args
 
-		var response []byte
-		if redisCmd, ok := redisCommandTable[cmd]; ok {
-			response = redisCmd.Function(cmd, args)
+		if command, ok := redisCommandTable[cmd]; ok {
+			response := command.Function(server, cmd, args)
+			commandRequest.Response <- response
 		} else {
-			response = []byte(fmt.Sprintf("-ERR Unknown command: %s\r\n", cmd))
+			response := []byte(fmt.Sprintf("-ERR Unknown command: %s\r\n", cmd))
+			commandRequest.Response <- response
 		}
-
-		commandRequest.Response <- response
 	}
 }
 
@@ -288,7 +290,7 @@ func readRESP(reader *bufio.Reader) (interface{}, error) {
 	}
 }
 
-func handlePingCommand(cmd string, args []interface{}) []byte {
+func handlePingCommand(server *RedisServer, cmd string, args []interface{}) []byte {
 	if len(args) > 1 {
 		return addReplyErrorArity()
 	}
@@ -300,7 +302,7 @@ func handlePingCommand(cmd string, args []interface{}) []byte {
 	}
 }
 
-func handleEchoCommand(cmd string, args []interface{}) []byte {
+func handleEchoCommand(server *RedisServer, cmd string, args []interface{}) []byte {
 	if len(args) != 1 {
 		return addReplyErrorArity()
 	}
@@ -311,6 +313,44 @@ func handleEchoCommand(cmd string, args []interface{}) []byte {
 	}
 
 	return addReplyBulk([]interface{}{arg})
+}
+
+func (server *RedisServer) handleSetCommand(cmd string, args []interface{}) []byte {
+	if len(args) != 2 {
+		return addReplyErrorArity()
+	}
+
+	key, ok := args[0].(string)
+	if !ok {
+		return []byte("-ERR Invalid key type\r\n")
+	}
+
+	value, ok := args[1].(string)
+	if !ok {
+		return []byte("-ERR Invalid value type\r\n")
+	}
+
+	server.Storage[key] = value
+
+	return []byte("+OK\r\n")
+}
+
+func (server *RedisServer) handleGetCommand(cmd string, args []interface{}) []byte {
+	if len(args) != 1 {
+		return addReplyErrorArity()
+	}
+
+	key, ok := args[0].(string)
+	if !ok {
+		return []byte("-ERR Invalid key type\r\n")
+	}
+
+	value, ok := server.Storage[key]
+	if !ok {
+		return []byte("$-1\r\n")
+	}
+
+	return addReplyBulk([]interface{}{value})
 }
 
 func addReplyErrorArity() []byte {
