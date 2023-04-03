@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -54,7 +55,8 @@ type RedisCommand struct {
 }
 
 type RedisServer struct {
-	Storage map[string]string
+	Storage     map[string]string
+	Expirations map[string]time.Time
 }
 
 var redisCommandTable map[string]RedisCommand
@@ -63,7 +65,8 @@ func main() {
 	// load all redis commands with json files into RedisCommandTable map
 	redisCommandTable = loadCommandsFromJSON("app/commands")
 	redisServer := &RedisServer{
-		Storage: make(map[string]string),
+		Storage:     make(map[string]string),
+		Expirations: make(map[string]time.Time),
 	}
 
 	l, err := net.Listen("tcp", "0.0.0.0:6379")
@@ -316,7 +319,7 @@ func handleEchoCommand(server *RedisServer, cmd string, args []interface{}) []by
 }
 
 func (server *RedisServer) handleSetCommand(cmd string, args []interface{}) []byte {
-	if len(args) != 2 {
+	if len(args) != 2 && len(args) != 4 {
 		return addReplyErrorArity()
 	}
 
@@ -330,7 +333,28 @@ func (server *RedisServer) handleSetCommand(cmd string, args []interface{}) []by
 		return []byte("-ERR Invalid value type\r\n")
 	}
 
-	server.Storage[key] = value
+	if len(args) == 4 {
+		expiryOption, ok := args[2].(string)
+		if !ok || strings.ToUpper(expiryOption) != "PX" {
+			return []byte("-ERR Invalid expiry option\r\n")
+		}
+
+		expiry, ok := args[3].(string)
+		if !ok {
+			return []byte("-ERR Invalid expiry type\r\n")
+		}
+
+		expiryInt, err := strconv.Atoi(expiry)
+		if err != nil {
+			return []byte("-ERR Invalid expiry value\r\n")
+		}
+
+		server.Storage[key] = value
+		server.Expirations[key] = time.Now().Add(time.Duration(expiryInt) * time.Millisecond)
+	} else {
+		server.Storage[key] = value
+		delete(server.Expirations, key)
+	}
 
 	return []byte("+OK\r\n")
 }
@@ -343,6 +367,13 @@ func (server *RedisServer) handleGetCommand(cmd string, args []interface{}) []by
 	key, ok := args[0].(string)
 	if !ok {
 		return []byte("-ERR Invalid key type\r\n")
+	}
+
+	// Check if the key has expired
+	if expiration, exists := server.Expirations[key]; exists && time.Now().After(expiration) {
+		delete(server.Storage, key)
+		delete(server.Expirations, key)
+		return []byte("$-1\r\n")
 	}
 
 	value, ok := server.Storage[key]
